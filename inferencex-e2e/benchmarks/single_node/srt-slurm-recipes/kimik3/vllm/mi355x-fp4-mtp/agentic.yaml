@@ -307,7 +307,7 @@ override_tp8_c60_dcp8_simple:
         speculative-config: '{"model":"Inferact/Kimi-K3-DSpark","num_speculative_tokens":4,"method":"dspark","attention_backend":"ROCM_AITER_MLA","kv_cache_dtype":"fp8","draft_sample_method":"probabilistic","rejection_sample_method":"block"}'
         additional-config: '{"kda_prefill_backend":"fused"}'
         quantization-config: '{"targets":{"*in_proj_qkvgfab":"fp8_per_channel"}}'
-        kv-transfer-config: '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":224875000000,"lazy_offload":false}}'
+        kv-transfer-config: '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use_per_rank":112437500000,"lazy_offload":false}}'
       env:
         VLLM_USE_BREAKABLE_CUDAGRAPH: '0'
         PYTHONHASHSEED: '42'
