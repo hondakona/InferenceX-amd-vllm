@@ -26,9 +26,6 @@ MASTER = {KEY: {
         "isl": 8192, "osl": 1024, "search-space": [{"tp": 1, "conc-list": [2, 6]}],
     }]},
 }}
-AGENTX_MASTER = {KEY: {**MASTER[KEY], "scenarios": {"agentic-coding": [{
-    "search-space": [{"tp": 1, "kv-offloading": "none", "conc-list": [2, 6]}],
-}]}}}
 POINTS = [("example/model", 2, "example/image:stable"), ("example/model", 6, "example/image:stable")]
 
 GENERATOR = '''\
@@ -52,7 +49,7 @@ def rows(config_keys, config_files, runner_config):
     for key in config_keys:
         entry = master[key]
         gpus = hardware[entry["runner"]]["gpus-per-node"]
-        for scenario in entry["scenarios"].get("fixed-seq-len", []):
+        for scenario in entry["scenarios"]["fixed-seq-len"]:
             for space in scenario["search-space"]:
                 if space["tp"] > gpus:
                     sys.exit(f"{key}: tp {space['tp']} exceeds {gpus} GPUs per node")
@@ -67,21 +64,6 @@ def rows(config_keys, config_files, runner_config):
                         "dp-attn": False, "spec-decoding": "none",
                         "exp-name": entry["model-prefix"] + "_8k1k", "disagg": False,
                         "run-eval": False,
-                    })
-        for scenario in entry["scenarios"].get("agentic-coding", []):
-            for space in scenario["search-space"]:
-                if space["tp"] > gpus:
-                    sys.exit(f"{key}: tp {space['tp']} exceeds {gpus} GPUs per node")
-                for conc in space["conc-list"]:
-                    result.append({
-                        "image": entry["image"], "model": entry["model"],
-                        "model-prefix": entry["model-prefix"], "precision": entry["precision"],
-                        "framework": entry["framework"], "runner": entry["runner"],
-                        "tp": space["tp"], "pp": 1, "dcp-size": 1, "pcp-size": 1, "ep": 1,
-                        "dp-attn": False, "spec-decoding": "none", "conc": conc,
-                        "kv-offloading": space["kv-offloading"], "total-cpu-dram-gb": 0,
-                        "duration": 1800, "exp-name": entry["model-prefix"] + "_agentx",
-                        "scenario-type": "agentic-coding", "run-eval": False,
                     })
     return result
 
@@ -149,14 +131,11 @@ def changelog_entry(link: str) -> bytes:
     return f'- config-keys:\n    - {KEY}\n  description:\n    - "Update {KEY}"\n  pr-link: {link}\n'.encode()
 
 
-def commit_history(
-    root: Path, project: str = "", *, launcher: bool = True, master: dict = MASTER
-) -> tuple[str, str]:
+def commit_history(root: Path, project: str = "", *, launcher: bool = True) -> tuple[str, str]:
     """Commit a base revision and a head appending one changelog entry; return both SHAs.
 
     The working tree is left at the head. With ``launcher`` the revision ships its own
-    ``infx.launch`` entrypoint, which e2e runs require of every measured revision. ``master``
-    is the revision's NVIDIA master config.
+    ``infx.launch`` entrypoint, which e2e runs require of every measured revision.
     """
     def git(*args: str) -> str:
         return subprocess.run(
@@ -170,7 +149,7 @@ def commit_history(
         "infx/matrix/generate.py": GENERATOR,
         "infx/matrix/plan.py": PLANNER,
         "configs/amd-master.yaml": "{}\n",
-        "configs/nvidia-master.yaml": yaml.safe_dump(master),
+        "configs/nvidia-master.yaml": yaml.safe_dump(MASTER),
         "configs/runners.yaml": yaml.safe_dump(RUNNERS),
         **({"infx/launch/__init__.py": "", "infx/launch/__main__.py": ""} if launcher else {}),
     }

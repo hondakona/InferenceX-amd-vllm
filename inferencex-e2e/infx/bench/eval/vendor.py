@@ -44,7 +44,6 @@ class StepError(Exception):
     """A setup step failed; ``returncode`` becomes the eval's exit code."""
 
     def __init__(self, message: str, returncode: int) -> None:
-        """Keep ``message`` and the exit code ``returncode`` the eval should return."""
         super().__init__(message)
         self.returncode = returncode
 
@@ -113,7 +112,6 @@ class Job:
             raise StepError(f"{self.spec.label} {stage} failed with exit code {rc}", rc)
 
     def adapter_argv(self, command: tuple[str, ...], *args: str) -> list[str]:
-        """The adapter command line with ``command`` and ``args``, plus model, output, and suite."""
         suite = [self.provider.suite_flag, self.suite] if self.provider.suite_flag else []
         return [
             self.python, str(EVALS / self.spec.adapter), *command, *args,
@@ -121,7 +119,6 @@ class Job:
         ]  # fmt: skip
 
     def published(self) -> bool:
-        """Whether every result glob of the suite matches a file in the results directory."""
         results = self.ctx.results_dir
         return all(any(p.is_file() for p in results.glob(glob)) for glob in self.spec.results)
 
@@ -195,7 +192,6 @@ def _provision(job: Job) -> str:
 
 
 def _provision_failed(job: Job, detail: str) -> StepError:
-    """Print ``detail`` and return the provisioning ``StepError`` with exit code 1."""
     print(f"ERROR: {detail}", file=sys.stderr)
     return StepError(f"{job.spec.label} {_PROVISION} failed with exit code 1", 1)
 
@@ -209,7 +205,6 @@ def _pip_target(job: Job, target: Path) -> list[str]:
 
 
 def _prepare_kimi(job: Job) -> tuple[list[str], dict[str, str]]:
-    """Install Kimi's runtime and verifier checkout, then return adapter args and ``PYTHONPATH``."""
     runtime = job.scratch / "kimi-runtime"
     job.step("dependency installation", _pip_target(job, runtime))
     checkout = job.scratch / "kimi-verifier"
@@ -225,7 +220,6 @@ def _prepare_kimi(job: Job) -> tuple[list[str], dict[str, str]]:
 
 
 def _prepare_minimax(job: Job) -> tuple[list[str], dict[str, str]]:
-    """Fetch the pinned MiniMax source and dependencies, then return adapter args and no env."""
     source = job.scratch / "minimax-source"
     dependencies = job.scratch / "minimax-deps"
     stage = "pinned runtime preparation"
@@ -240,12 +234,10 @@ def _prepare_minimax(job: Job) -> tuple[list[str], dict[str, str]]:
 
 
 def _bfcl_project(job: Job) -> Path:
-    """The BFCL project directory inside the job's scratch space."""
     return job.scratch / "bfcl-project"
 
 
 def _prepare_bfcl(job: Job) -> tuple[list[str], dict[str, str]]:
-    """Install the BFCL runtime, create its project directory, and return adapter args."""
     job.step("dependency installation", [
         job.python, str(EVALS / job.spec.adapter),
         "--install-runtime", str(job.scratch / "bfcl-wheel"), "--uv", uv.find(),

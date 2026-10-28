@@ -20,7 +20,6 @@ class TrtllmBackend(ServerMetricsBackend):
     name = "trtllm"
 
     def matches(self, metrics: dict[str, dict[str, Any]], framework: str) -> bool:
-        """Return True for trtllm_ metric names, or for an empty scrape from a TRT-LLM ``framework``."""
         metric_names = set(metrics)
         return any(name.startswith("trtllm_") for name in metric_names) or (
             not metrics and framework.lower() in ("trtllm", "dynamo-trt", "dynamo-trtllm")
@@ -32,7 +31,6 @@ class TrtllmBackend(ServerMetricsBackend):
         flat: dict[str, Any],
         nested: dict[str, Any],
     ) -> None:
-        """Fill token totals, KV hit rate, usage and offload bytes and per-endpoint sources from ``metrics``."""
         prompt_total = _first_counter_total(
             metrics,
             ["dynamo_frontend_input_sequence_tokens", "trtllm_prompt_tokens_total"],
@@ -132,7 +130,6 @@ class TrtllmBackend(ServerMetricsBackend):
         metrics: dict[str, dict[str, Any]],
         server_logs: Iterable[str | None],
     ) -> int | None:
-        """Return KV max blocks times tokens per block from ``metrics``, or None if either is missing."""
         del server_logs
         max_blocks = sum_stat(
             metrics,
@@ -154,7 +151,6 @@ def _first_counter_total(
     metrics: dict[str, dict[str, Any]],
     metric_names: list[str],
 ) -> float | None:
-    """Return the first non-None counter total among ``metric_names`` in ``metrics``."""
     for metric_name in metric_names:
         value = sum_stat(
             metrics,
@@ -167,7 +163,6 @@ def _first_counter_total(
 
 
 def _trtllm_sources(metrics: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return per-endpoint token, hit rate and KV usage rows from TRT-LLM ``metrics``, sorted by endpoint."""
     endpoints: set[str] = set()
     roles: dict[str, str] = {}
     for entry in metrics.values():
@@ -191,7 +186,6 @@ def _trtllm_sources(metrics: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     for endpoint in sorted(endpoints):
 
         def series_filter(series: dict, endpoint: str = endpoint) -> bool:
-            """Return whether ``series`` was scraped from ``endpoint``."""
             return str(series.get("endpoint_url", "")) == endpoint
 
         prompt_tokens = sum_stat(
@@ -239,7 +233,6 @@ def _trtllm_sources(metrics: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _normalize_role(mode: str) -> str:
-    """Map a disaggregation ``mode`` label to prefill, decode or combined, else return it lowercased."""
     lowered = mode.lower()
     if lowered in ("prefill", "context", "ctx"):
         return "prefill"

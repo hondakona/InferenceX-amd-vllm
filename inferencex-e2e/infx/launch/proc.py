@@ -1,14 +1,31 @@
-"""Subprocesses echoed like bash xtrace (``infx.bench.proc.echo`` masks their secrets)."""
+"""Subprocesses echoed like bash xtrace, with secret values masked in the echo."""
 
 from __future__ import annotations
 
 import os
+import re
+import shlex
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from infx.bench.proc import echo
+_SECRET_NAME = re.compile(r"TOKEN|SECRET", re.IGNORECASE)
+
+
+def echo(argv: Sequence[str | os.PathLike[str]], env: Mapping[str, str] | None = None) -> None:
+    """Print ``+ <argv>`` to stderr, masking the values of ``*TOKEN*`` and ``*SECRET*`` variables."""
+    text = shlex.join(map(os.fspath, argv))
+    secrets = {
+        value
+        for source in (os.environ, env or {})
+        for name, value in source.items()
+        if _SECRET_NAME.search(name) and len(value) >= 4
+    }
+    for value in sorted(secrets, key=len, reverse=True):
+        text = text.replace(value, "***")
+    sys.stdout.flush()
+    print(f"+ {text}", file=sys.stderr, flush=True)
 
 
 def run(

@@ -10,10 +10,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from infx.clusters import Cluster
@@ -24,8 +23,6 @@ if TYPE_CHECKING:
 
 class BackendError(RuntimeError):
     """A scheduler, image, or storage operation failed; reported without a traceback."""
-
-    retriable: ClassVar[bool] = True
 
 
 class JobState(StrEnum):
@@ -43,21 +40,14 @@ class JobStatus:
 
     ``exit_code`` is the shell-style status (128 + N after signal N) when the scheduler
     reports one. Only ``state`` decides success: Slurm reports a cancelled job as ``0:0``.
-    ``nodes`` names the hosts the job ran on, in the scheduler's notation, and the ``*_at``
-    times are when it was submitted, started and ended, when the scheduler says.
     """
 
     state: JobState
     raw: str
     exit_code: int | None = None
-    nodes: str | None = None
-    submitted_at: datetime | None = None
-    started_at: datetime | None = None
-    ended_at: datetime | None = None
 
     @property
     def succeeded(self) -> bool:
-        """Return whether the job ended in the succeeded state."""
         return self.state is JobState.SUCCEEDED
 
 
@@ -116,7 +106,6 @@ class Backend(ABC):
     """Runs containers and follows jobs on one cluster's scheduler for one launch."""
 
     def __init__(self, cluster: Cluster, request: LaunchRequest, life: Lifecycle) -> None:
-        """Bind the backend to ``cluster``, the launch ``request`` and its ``life`` cycle."""
         self.cluster = cluster
         self.request = request
         self.life = life

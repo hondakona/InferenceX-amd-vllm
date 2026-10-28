@@ -32,7 +32,6 @@ import copy
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -49,7 +48,6 @@ PLOT_SUBAGENT = HERE / "plot_subagent_distributions.py"
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse the command line and return the options, rejecting ``--dwbug-min-peak`` alone."""
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -103,15 +101,9 @@ def parse_args() -> argparse.Namespace:
         "--limit",
         type=int,
         default=None,
-        help="Cap session count (smoke tests), taking the first sessions in --sampling order.",
+        help="Cap session count (for smoke tests). Implies --sampling top.",
     )
     p.add_argument("--sampling", choices=("top", "recent", "random"), default="top")
-    p.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Salt for --sampling random (required by the sampler in that mode).",
-    )
     p.add_argument(
         "--exclude-dynamic-workflow-bug",
         action="store_true",
@@ -133,13 +125,11 @@ def parse_args() -> argparse.Namespace:
         help="HF write token (else $HF_TOKEN or cached login).",
     )
 
-    p.add_argument(
-        "--skip-sample", action="store_true", help="Reuse a completed work-dir/proxy/ sample."
-    )
+    p.add_argument("--skip-sample", action="store_true", help="Reuse work-dir/proxy/ if present.")
     p.add_argument(
         "--skip-convert",
         action="store_true",
-        help="Reuse work-dir/per_trace/ if it holds exactly the sampled sessions.",
+        help="Reuse work-dir/per_trace/ if present.",
     )
     p.add_argument(
         "--skip-upload",
@@ -147,37 +137,21 @@ def parse_args() -> argparse.Namespace:
         help="Build payloads but don't push to HF.",
     )
 
-    args = p.parse_args()
-    if args.dwbug_min_peak is not None and not args.exclude_dynamic_workflow_bug:
-        p.error("--dwbug-min-peak requires --exclude-dynamic-workflow-bug")
-    return args
+    return p.parse_args()
 
 
 def _run(cmd: list, **kw: Any) -> None:
-    """Echo ``cmd`` and run it, raising ``CalledProcessError`` on failure."""
     print(f"$ {' '.join(shlex.quote(str(c)) for c in cmd)}", flush=True)
     subprocess.run(cmd, check=True, **kw)
 
 
-def _recreate(stage_dir: Path) -> None:
-    """Empty a work-dir stage directory so earlier runs' traces are not republished."""
-    if stage_dir.exists():
-        shutil.rmtree(stage_dir)
-    stage_dir.mkdir(parents=True)
-
-
 def stage_sample(args: argparse.Namespace, work_dir: Path) -> Path:
-    """Dump sampled proxy sessions into ``work_dir/proxy`` and return that directory.
-
-    With ``--skip-sample`` a complete earlier dump is reused. A missing manifest.json marks a crashed dump.
-    """
     proxy_dir = work_dir / "proxy"
-    complete = (proxy_dir / "manifest.json").is_file()
-    if args.skip_sample and complete and any(proxy_dir.glob("*.jsonl")):
+    if args.skip_sample and proxy_dir.exists() and any(proxy_dir.glob("*.jsonl")):
         n = sum(1 for _ in proxy_dir.glob("*.jsonl"))
         print(f"[sample] reusing {n} cached session JSONLs in {proxy_dir}")
         return proxy_dir
-    _recreate(proxy_dir)
+    proxy_dir.mkdir(parents=True, exist_ok=True)
     cmd: list = [
         sys.executable,
         str(SAMPLER),
@@ -195,7 +169,6 @@ def stage_sample(args: argparse.Namespace, work_dir: Path) -> Path:
         ("--require-cli-min", args.require_cli_min),
         ("--max-parallel-subagents", args.max_parallel_subagents),
         ("--limit", args.limit),
-        ("--seed", args.seed),
     ]:
         if val is not None:
             cmd += [flag, str(val)]
@@ -203,19 +176,19 @@ def stage_sample(args: argparse.Namespace, work_dir: Path) -> Path:
         cmd.append("--exclude-dynamic-workflow-bug")
         if args.dwbug_min_peak is not None:
             cmd += ["--dwbug-min-peak", str(args.dwbug_min_peak)]
+    if args.db_url:
+        cmd += ["--db-url", args.db_url]
     _run(cmd)
     return proxy_dir
 
 
 def stage_convert(args: argparse.Namespace, proxy_dir: Path, work_dir: Path) -> Path:
-    """Convert the proxy JSONLs in ``proxy_dir`` to weka JSONs under ``work_dir`` and return that directory."""
     per_trace = work_dir / "per_trace"
-    traces = {p.stem for p in per_trace.glob("*.json")}
-    if args.skip_convert and traces and traces == {p.stem for p in proxy_dir.glob("*.jsonl")}:
-        n = len(traces)
+    if args.skip_convert and per_trace.exists() and any(per_trace.glob("*.json")):
+        n = sum(1 for _ in per_trace.glob("*.json"))
         print(f"[convert] reusing {n} cached per-trace JSONs in {per_trace}")
         return per_trace
-    _recreate(per_trace)
+    per_trace.mkdir(parents=True, exist_ok=True)
     _run(
         [
             sys.executable,
@@ -284,7 +257,6 @@ def _compute_stats(per_trace_dir: Path) -> dict:
 
 
 def _format_stats(stats: dict) -> str:
-    """Return ``stats`` as one aligned ``key: value`` line per entry."""
     lines = []
     for k, v in stats.items():
         lines.append(f"{k}: {v:>15,}")
@@ -313,7 +285,6 @@ def _build_readme(
     pretty_date: str | None = None,
     isl_cap: int | None = None,
 ) -> str:
-    """Return the dataset card README for ``repo_id`` from its stats, filters, and sampler command."""
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     pretty_label = (
         f"CC Traces — Weka, With Subagents, "
@@ -418,7 +389,6 @@ def _build_readme(
 
 
 def _filters_block(args: argparse.Namespace, *, cap_256k: bool = False) -> str:
-    """Return the Markdown bullet list of the sampling filters in ``args``."""
     bits = []
     if (
         args.min_trace_version is not None
@@ -481,7 +451,7 @@ def _build_payload(
     parent_repo_id: str | None = None,
 ) -> dict:
     """Assemble traces.jsonl + stats + plots + README into payload_dir."""
-    _recreate(payload_dir)
+    payload_dir.mkdir(parents=True, exist_ok=True)
     n = _concat_traces_jsonl(per_trace_dir, payload_dir / "traces.jsonl")
     print(f"[payload] wrote traces.jsonl with {n} traces")
 
@@ -520,7 +490,6 @@ def _build_payload(
 
 
 def _is_oversize(req: dict, cap: int = CAP_TOKENS) -> bool:
-    """Whether the request's input plus output tokens exceed ``cap``."""
     return (req.get("in") or 0) + (req.get("out") or 0) > cap
 
 
@@ -585,16 +554,8 @@ def _filter_trace(trace: dict, is_oversize: Callable[[dict], bool]) -> dict | No
         entry["t"] = first_t
         entry["duration_ms"] = round((last_end - first_t) * 1000.0)
         entry["total_tokens"] = sum((r.get("in") or 0) + (r.get("out") or 0) for r in inners)
-        entry["models"] = sorted({r["model"] for r in inners})
 
     out["requests"] = surviving
-    out["models"] = sorted(
-        {
-            m
-            for e in surviving
-            for m in (e["models"] if e.get("type") == "subagent" else [e["model"]])
-        }
-    )
     return out
 
 
@@ -616,7 +577,7 @@ def _stage_filter(
     tag: str,
 ) -> Path:
     """Apply ``filter_fn`` to every per-trace JSON; write survivors to out_dir."""
-    _recreate(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     kept = 0
     dropped = 0
     for p in sorted(per_trace_dir.glob("*.json")):
@@ -656,7 +617,6 @@ def stage_isl_filter(per_trace_dir: Path, work_dir: Path, cap: int) -> Path:
 def stage_upload(
     args: argparse.Namespace, payload_dir: Path, repo_id: str, commit_msg: str
 ) -> None:
-    """Create the dataset repo ``repo_id`` and upload ``payload_dir`` to it, unless ``--skip-upload``."""
     if args.skip_upload:
         print(f"[upload] --skip-upload: payload ready at {payload_dir}")
         return
@@ -696,7 +656,6 @@ def _reconstruct_sampler_cmd(args: argparse.Namespace) -> list:
         ("--require-cli-min", args.require_cli_min),
         ("--max-parallel-subagents", args.max_parallel_subagents),
         ("--limit", args.limit),
-        ("--seed", args.seed),
     ]:
         if val is not None:
             cmd += [flag, str(val)]
@@ -708,7 +667,6 @@ def _reconstruct_sampler_cmd(args: argparse.Namespace) -> list:
 
 
 def main() -> int:
-    """Sample, convert, build, and upload the base dataset and the optional 256k one, returning 0."""
     args = parse_args()
     work_dir = args.work_dir
     work_dir.mkdir(parents=True, exist_ok=True)

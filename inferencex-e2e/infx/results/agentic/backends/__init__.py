@@ -24,7 +24,6 @@ def detect_backend(
     metrics: dict[str, dict[str, Any]],
     framework: str,
 ) -> ServerMetricsBackend | None:
-    """Return the first backend that claims ``metrics`` for ``framework``, or None."""
     for backend in BACKENDS:
         if backend.matches(metrics, framework):
             return backend

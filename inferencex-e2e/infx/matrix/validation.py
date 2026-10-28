@@ -15,13 +15,18 @@ from pydantic import (
     model_validator,
 )
 
-from infx import yamlio
 from infx.clusters import CLUSTER_LABEL_PREFIX, RunnerInventory
 
 DEFAULT_AGENTIC_DURATION_SECONDS = 3600
 SINGLE_NODE_RECIPES = "benchmarks/single_node/srt-slurm-recipes"
 MULTI_NODE_RECIPES = "benchmarks/multi_node/srt-slurm-recipes"
+LLMD_FRAMEWORK = "llmd-vllm"
 RECIPE_SELECTOR = re.compile(r"base|override_[\w-]+|zip_override_[\w-]+\[\d+\]")
+
+"""
+    The below class defines the field names expected to be present in the JSON entries
+    for both single-node and multi-node configurations.
+"""
 
 
 class Fields(Enum):
@@ -70,7 +75,6 @@ class Fields(Enum):
     ROUTER = "router"
     KV_P2P_TRANSFER = "kv-p2p-transfer"
     TOTAL_CPU_DRAM_GB = "total-cpu-dram-gb"
-    DECODE_CPU_DRAM_GB = "decode-cpu-dram-gb"
     AVAILABLE_CPU_DRAM_MIB = "available-cpu-dram-mib"
     DRAM_UTILIZATION = "dram-utilization"
     GPUS_PER_NODE = "gpus-per-node"
@@ -95,7 +99,19 @@ class Fields(Enum):
     EVAL_SUITE = "eval-suite"
 
 
+"""
+    Below is the validation logic for the OUTPUT of infx.matrix.generate, i.e.,
+    the input to the actual workflow files. The validation enforces a strict set of rules on the structure
+    of the generated matrix entries to ensure correctness before proceeding with benchmarking. This ensures
+    that no validation has to happen in the workflow itself, i.e., at runtime, it is assumed that all inputs
+    are valid. Threfore, there should not be any default values set in these Pydantic models. Any missing value
+    should raise a validation error.
+"""
+
+
 class ComponentMetadata(BaseModel):
+    """Strict name and version metadata for an optional runtime component."""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1)
@@ -104,7 +120,7 @@ class ComponentMetadata(BaseModel):
     @field_validator("version")
     @classmethod
     def validate_component_version(cls, version: str) -> str:
-        """Return ``version``, rejecting an ``image:`` reference with ValueError."""
+        """Require the component's own version rather than its image provenance."""
         if version.startswith("image:"):
             raise ValueError(
                 "component version must be a release, package version, or "
@@ -114,6 +130,8 @@ class ComponentMetadata(BaseModel):
 
 
 class KVOffloadBackendMetadata(BaseModel):
+    """KV offload backend metadata with an optional independent version."""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1)
@@ -122,7 +140,7 @@ class KVOffloadBackendMetadata(BaseModel):
     @field_validator("version")
     @classmethod
     def validate_component_version(cls, version: str | None) -> str | None:
-        """Return ``version``, rejecting an ``image:`` reference with ValueError."""
+        """Reject image provenance when an independent version is available."""
         if version is not None and version.startswith("image:"):
             raise ValueError(
                 "component version must be a release, package version, or "
@@ -132,7 +150,7 @@ class KVOffloadBackendMetadata(BaseModel):
 
 
 def _validate_tp_context_topology(self: Any) -> Any:
-    """Return the model, raising ValueError unless its TP is divisible by its DCP size."""
+    """Validate TP/DCP topology shared by single-node and worker schemas."""
     if self.tp % self.dcp_size != 0:
         raise ValueError(
             f"'{Fields.TP.value}' ({self.tp}) must be divisible by "
@@ -142,6 +160,9 @@ def _validate_tp_context_topology(self: Any) -> Any:
 
 
 class SingleNodeMatrixEntry(BaseModel):
+    """Pydantic model for validating single node matrix entry structure.
+    This validates the input that should be expected to .github/workflows/benchmark-tmpl.yml"""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     image: str
@@ -177,15 +198,16 @@ class SingleNodeMatrixEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_single_node_topology(self) -> Self:
-        """Return the entry, raising ValueError unless TP is divisible by DCP size."""
         return _validate_tp_context_topology(self)
 
 
 class WorkerConfig(BaseModel):
+    """Pydantic model for validating worker configuration in multinode entries."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     num_worker: int = Field(alias=Fields.NUM_WORKER.value)
-    tp: int = Field(gt=0)
+    tp: int
     pp: int = Field(default=1, gt=0, strict=True)
     dcp_size: int = Field(default=1, alias=Fields.DCP_SIZE.value, gt=0, strict=True)
     pcp_size: int = Field(default=1, alias=Fields.PCP_SIZE.value, gt=0, strict=True)
@@ -199,7 +221,6 @@ class WorkerConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_worker_topology(self) -> Self:
-        """Return the worker, raising ValueError for an invalid DWDP or TP and DCP topology."""
         if self.dwdp_size > 1 and (
             self.num_worker <= 0
             or (self.tp, self.ep, self.pp, self.dcp_size, self.pcp_size) != (1, 1, 1, 1, 1)
@@ -212,10 +233,12 @@ class WorkerConfig(BaseModel):
 
 
 class AggregateWorkerConfig(BaseModel):
+    """Topology for the aggregate worker role serving prefill and decode."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     num_worker: int = Field(default=1, alias=Fields.NUM_WORKER.value, gt=0, strict=True)
-    tp: int = Field(gt=0)
+    tp: int
     pp: int = Field(default=1, gt=0, strict=True)
     dcp_size: int = Field(default=1, alias=Fields.DCP_SIZE.value, gt=0, strict=True)
     pcp_size: int = Field(default=1, alias=Fields.PCP_SIZE.value, gt=0, strict=True)
@@ -228,12 +251,11 @@ class AggregateWorkerConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_worker_topology(self) -> Self:
-        """Return the worker, raising ValueError unless TP is divisible by DCP size."""
         return _validate_tp_context_topology(self)
 
 
 def _validate_worker_hardware_pair(self: Any) -> Any:
-    """Return the model, raising ValueError for DWDP on decode or hardware set on one side only."""
+    """Require prefill and decode workers to declare hardware together."""
     if self.decode.dwdp_size > 1:
         raise ValueError("DWDP is supported only on prefill workers")
     if bool(self.prefill.hardware) != bool(self.decode.hardware):
@@ -245,6 +267,9 @@ def _validate_worker_hardware_pair(self: Any) -> Any:
 
 
 class MultiNodeMatrixEntry(BaseModel):
+    """Pydantic model for validating multinode matrix entry structure.
+    This validates the input that should be expected to .github/workflows/benchmark-multinode-tmpl.yml"""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     image: str
@@ -287,18 +312,18 @@ class MultiNodeMatrixEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_worker_hardware_pair(self) -> Self:
-        """Return the entry, raising ValueError unless its workers' hardware fields agree."""
         return _validate_worker_hardware_pair(self)
 
     @model_validator(mode="after")
     def validate_disagg_transfer(self) -> Self:
-        """Return the entry, raising ValueError if it is disaggregated without a KV transfer."""
         if self.disagg and self.kv_p2p_transfer is None:
             raise ValueError(f"{Fields.DISAGG.value}=true requires {Fields.KV_P2P_TRANSFER.value}")
         return self
 
 
 class SingleNodeAgenticMatrixEntry(BaseModel):
+    """Pydantic model for validating single-node agentic coding matrix entries."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     image: str
@@ -339,16 +364,16 @@ class SingleNodeAgenticMatrixEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_kv_offload_fields(self) -> Self:
-        """Return the entry, raising ValueError for inconsistent KV offload fields."""
         return _validate_kv_offload_fields(self)
 
     @model_validator(mode="after")
     def validate_single_node_topology(self) -> Self:
-        """Return the entry, raising ValueError unless TP is divisible by DCP size."""
         return _validate_tp_context_topology(self)
 
 
 class MultiNodeAgenticMatrixEntry(BaseModel):
+    """Pydantic model for validating multinode agentic coding matrix entries."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     image: str
@@ -376,7 +401,6 @@ class MultiNodeAgenticMatrixEntry(BaseModel):
         default=None, alias=Fields.KV_P2P_TRANSFER.value, min_length=1
     )
     total_cpu_dram_gb: int = Field(alias=Fields.TOTAL_CPU_DRAM_GB.value, ge=0)
-    decode_cpu_dram_gb: int = Field(default=0, alias=Fields.DECODE_CPU_DRAM_GB.value, ge=0)
     duration: int = Field(alias=Fields.DURATION.value)
     exp_name: str = Field(alias=Fields.EXP_NAME.value)
     disagg: bool
@@ -394,17 +418,14 @@ class MultiNodeAgenticMatrixEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_worker_hardware_pair(self) -> Self:
-        """Return the entry, raising ValueError unless its workers' hardware fields agree."""
         return _validate_worker_hardware_pair(self)
 
     @model_validator(mode="after")
     def validate_kv_offload_fields(self) -> Self:
-        """Return the entry, raising ValueError for inconsistent KV offload fields."""
         return _validate_kv_offload_fields(self)
 
     @model_validator(mode="after")
     def validate_disagg_transfer(self) -> Self:
-        """Return the entry, raising ValueError if it is disaggregated without a KV transfer."""
         if self.disagg and self.kv_p2p_transfer is None:
             raise ValueError(f"{Fields.DISAGG.value}=true requires {Fields.KV_P2P_TRANSFER.value}")
         return self
@@ -414,7 +435,7 @@ AgenticMatrixEntry = SingleNodeAgenticMatrixEntry | MultiNodeAgenticMatrixEntry
 
 
 def validate_agentic_matrix_entry(entry: dict) -> dict:
-    """Return an agentic matrix row unchanged, raising ValueError with the row if it is invalid."""
+    """Validate that an agentic matrix entry matches the expected structure."""
     try:
         if Fields.PREFILL.value in entry:
             MultiNodeAgenticMatrixEntry(**entry)
@@ -428,7 +449,11 @@ def validate_agentic_matrix_entry(entry: dict) -> dict:
 
 
 def validate_matrix_entry(entry: dict, is_multinode: bool) -> dict:
-    """Return a fixed-sequence matrix row unchanged, raising ValueError with the row if invalid."""
+    """Validate that matrix_values entries match the expected structure.
+
+    Raises ValueError if any entry fails validation.
+    Returns the original list if all entries are valid.
+    """
     try:
         if is_multinode:
             MultiNodeMatrixEntry(**entry)
@@ -441,12 +466,20 @@ def validate_matrix_entry(entry: dict, is_multinode: bool) -> dict:
     return entry
 
 
+"""
+    Below is the validation logic for the INPUT to infx.matrix.generate, i.e.,
+    the master configuration files found in configs. The validation enforces a strict set of
+    rules on the structure of the master configuration files to ensure correctness before proceeding
+    with matrix generation.
+"""
+
+
 def _validate_conc_fields(self: Any) -> Any:
-    """Return the model, raising ValueError unless it has exactly one valid conc range or list."""
+    """Ensure either (conc_start AND conc_end) OR conc_list is provided, but not both."""
     has_range = self.conc_start is not None and self.conc_end is not None
     has_list = self.conc_list is not None and len(self.conc_list) > 0
 
-    if has_list and (self.conc_start is not None or self.conc_end is not None):
+    if has_range and has_list:
         raise ValueError(
             f"Cannot specify both '{Fields.CONC_LIST.value}' list and "
             f"'{Fields.CONC_START.value}'/'{Fields.CONC_END.value}'. "
@@ -481,14 +514,10 @@ def _validate_conc_fields(self: Any) -> Any:
     if has_list and not all(x > 0 for x in self.conc_list):
         raise ValueError(f"Input '{Fields.CONC_LIST.value}' entries must be greater than 0.")
 
-    if has_list and len(set(self.conc_list)) != len(self.conc_list):
-        raise ValueError(f"Input '{Fields.CONC_LIST.value}' entries must not repeat.")
-
     return self
 
 
 def _validate_agentic_runner_is_cluster(runner: str, scenarios: Any) -> None:
-    """Raise ValueError if an agentic config's ``runner`` is not a cluster label."""
     if scenarios.agentic_coding and not runner.startswith(CLUSTER_LABEL_PREFIX):
         raise ValueError(
             f"Agentic master configs must use a '{CLUSTER_LABEL_PREFIX}<name>' runner "
@@ -497,7 +526,6 @@ def _validate_agentic_runner_is_cluster(runner: str, scenarios: Any) -> None:
 
 
 def _validate_kv_offload_fields(self: Any) -> Any:
-    """Return the model, raising ValueError unless a KV offload backend comes with offloading."""
     backend = getattr(self, "kv_offload_backend", None)
     if self.kv_offloading is None:
         if backend is not None:
@@ -521,7 +549,6 @@ def _validate_kv_offload_fields(self: Any) -> Any:
 
 
 def _recipe_path(value: str) -> str:
-    """Return ``value``, raising ValueError unless it is a normalized relative POSIX path."""
     path = PurePosixPath(value)
     if (
         not path.parts
@@ -535,7 +562,6 @@ def _recipe_path(value: str) -> str:
 
 
 def _recipe_reference(value: str) -> str:
-    """Return a ``path[:selector]`` recipe reference, raising ValueError for a bad part."""
     path, separator, selector = value.partition(":")
     _recipe_path(path)
     if separator and not RECIPE_SELECTOR.fullmatch(selector):
@@ -550,9 +576,11 @@ RecipeReference = Annotated[str, AfterValidator(_recipe_reference)]
 
 
 class SingleNodeSearchSpaceEntry(BaseModel):
+    """Single node search space configuration."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    tp: int = Field(gt=0)
+    tp: int
     srt_recipe: RecipeReference | None = Field(default=None, alias=Fields.SRT_RECIPE.value)
     pp: int = Field(default=1, gt=0, strict=True)
     dcp_size: int = Field(default=1, alias=Fields.DCP_SIZE.value, gt=0, strict=True)
@@ -569,16 +597,16 @@ class SingleNodeSearchSpaceEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_conc_fields(self) -> Self:
-        """Return the entry, raising ValueError for an invalid conc range or list."""
         return _validate_conc_fields(self)
 
     @model_validator(mode="after")
     def validate_single_node_topology(self) -> Self:
-        """Return the entry, raising ValueError unless TP is divisible by DCP size."""
         return _validate_tp_context_topology(self)
 
 
 class MultiNodeSearchSpaceEntry(BaseModel):
+    """Multinode search space configuration."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     spec_decoding: Literal["mtp", "draft_model", "none"] = Field(
@@ -603,12 +631,10 @@ class MultiNodeSearchSpaceEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_conc_fields(self) -> Self:
-        """Return the entry, raising ValueError for an invalid conc range or list."""
         return _validate_conc_fields(self)
 
     @model_validator(mode="after")
     def validate_worker_hardware_pair(self) -> Self:
-        """Return the entry, raising ValueError unless it has one worker or a matching pair."""
         has_worker = self.worker is not None
         has_any_disagg_worker = self.prefill is not None or self.decode is not None
         has_complete_disagg_workers = self.prefill is not None and self.decode is not None
@@ -625,6 +651,8 @@ class MultiNodeSearchSpaceEntry(BaseModel):
 
 
 class SingleNodeSeqLenConfig(BaseModel):
+    """Single node sequence length configuration."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     isl: int
@@ -633,6 +661,8 @@ class SingleNodeSeqLenConfig(BaseModel):
 
 
 class MultiNodeSeqLenConfig(BaseModel):
+    """Multinode sequence length configuration."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     isl: int
@@ -642,9 +672,11 @@ class MultiNodeSeqLenConfig(BaseModel):
 
 
 class AgenticCodingSearchSpaceEntry(BaseModel):
+    """Agentic coding search space configuration."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    tp: int | None = Field(default=None, gt=0)
+    tp: int | None = None
     srt_recipe: RecipeReference | None = Field(default=None, alias=Fields.SRT_RECIPE.value)
     eval_srt_recipe: RecipeReference | None = Field(
         default=None, alias=Fields.EVAL_SRT_RECIPE.value
@@ -678,17 +710,14 @@ class AgenticCodingSearchSpaceEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_conc_fields(self) -> Self:
-        """Return the entry, raising ValueError for an invalid conc range or list."""
         return _validate_conc_fields(self)
 
     @model_validator(mode="after")
     def validate_kv_offload_fields(self) -> Self:
-        """Return the entry, raising ValueError for inconsistent KV offload fields."""
         return _validate_kv_offload_fields(self)
 
     @model_validator(mode="after")
     def validate_topology_fields(self) -> Self:
-        """Return the entry, raising ValueError unless it sets exactly one valid topology."""
         has_single_node = self.tp is not None
         has_aggregate_worker = self.worker is not None
         has_any_multinode_field = self.prefill is not None or self.decode is not None
@@ -741,6 +770,8 @@ class AgenticCodingSearchSpaceEntry(BaseModel):
 
 
 class AgenticCodingConfig(BaseModel):
+    """Agentic coding scenario configuration for trace replay benchmarks."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     search_space: list[AgenticCodingSearchSpaceEntry] = Field(alias=Fields.SEARCH_SPACE.value)
@@ -750,7 +781,6 @@ class AgenticCodingConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_dram_offload_capacity(self) -> Self:
-        """Return the config, raising ValueError for DRAM offload it cannot size."""
         for entry in self.search_space:
             if entry.kv_offloading != "dram":
                 continue
@@ -759,15 +789,12 @@ class AgenticCodingConfig(BaseModel):
                     f"{Fields.KV_OFFLOADING.value}='dram' requires "
                     f"{Fields.DRAM_UTILIZATION.value} with runner hardware metadata"
                 )
-            if entry.prefill is not None and entry.prefill.hardware is not None:
-                raise ValueError(
-                    f"{Fields.KV_OFFLOADING.value}='dram' does not support per-worker "
-                    f"'{Fields.HARDWARE.value}'"
-                )
         return self
 
 
 class SingleNodeScenarios(BaseModel):
+    """Scenarios wrapper for single-node configs."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     fixed_seq_len: list[SingleNodeSeqLenConfig] | None = Field(
@@ -779,13 +806,14 @@ class SingleNodeScenarios(BaseModel):
 
     @model_validator(mode="after")
     def at_least_one_scenario(self) -> Self:
-        """Return the scenarios, raising ValueError when none is set."""
         if not self.fixed_seq_len and not self.agentic_coding:
             raise ValueError("At least one scenario type must be specified")
         return self
 
 
 class MultiNodeScenarios(BaseModel):
+    """Scenarios wrapper for multinode configs."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     fixed_seq_len: list[MultiNodeSeqLenConfig] | None = Field(
@@ -797,14 +825,13 @@ class MultiNodeScenarios(BaseModel):
 
     @model_validator(mode="after")
     def at_least_one_scenario(self) -> Self:
-        """Return the scenarios, raising ValueError when none is set."""
         if not self.fixed_seq_len and not self.agentic_coding:
             raise ValueError("At least one scenario type must be specified")
         return self
 
 
 def _master_search_space_entries(self: BaseModel) -> list[BaseModel]:
-    """Return every search-space entry across a master config's scenarios."""
+    """Return every search-space entry in a master config."""
     return [
         entry
         for scenario_configs in (
@@ -817,7 +844,7 @@ def _master_search_space_entries(self: BaseModel) -> list[BaseModel]:
 
 
 def _validate_component_metadata_scope(self: BaseModel) -> BaseModel:
-    """Return the config, raising ValueError if router or KV transfer settings are misplaced."""
+    """Require unambiguous component metadata across a master config."""
     search_space_entries = _master_search_space_entries(self)
 
     for field in (Fields.ROUTER, Fields.KV_P2P_TRANSFER):
@@ -859,7 +886,7 @@ def _validate_component_metadata_scope(self: BaseModel) -> BaseModel:
 
 
 def _validate_multinode_entry_scope(self: BaseModel) -> BaseModel:
-    """Return the config, raising ValueError if an entry's workers do not fit its node type."""
+    """Match each search-space topology to its master serving mode."""
     search_space_entries = _master_search_space_entries(self)
     for entry in search_space_entries:
         worker = getattr(entry, "worker", None)
@@ -908,8 +935,14 @@ _RECIPE_SETTINGS = {"CONFIG_FILE": Fields.SRT_RECIPE, "EVAL_CONFIG_FILE": Fields
 
 
 def _validate_srt_recipes(self: Any) -> Any:
-    """Return the config, raising ValueError unless every entry names a valid srt recipe."""
+    """Every srt-slurm row names its recipe; llm-d rows keep CONFIG_FILE."""
     entries = _master_search_space_entries(self)
+    if self.multinode and self.framework == LLMD_FRAMEWORK:
+        if self.srt_recipe_dir is not None or any(
+            entry.srt_recipe or entry.eval_srt_recipe for entry in entries
+        ):
+            raise ValueError(f"{LLMD_FRAMEWORK} selects recipes with CONFIG_FILE, not srt-recipe")
+        return self
     if self.srt_recipe_dir is None:
         raise ValueError(f"srt-slurm configs require {Fields.SRT_RECIPE_DIR.value}")
     for entry in entries:
@@ -929,6 +962,8 @@ def _validate_srt_recipes(self: Any) -> Any:
 
 
 class SingleNodeMasterConfigEntry(BaseModel):
+    """Top-level single node master configuration entry."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     image: str
@@ -945,27 +980,25 @@ class SingleNodeMasterConfigEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_agentic_runner(self) -> Self:
-        """Return the config, raising ValueError if agentic scenarios use a non-cluster runner."""
         _validate_agentic_runner_is_cluster(self.runner, self.scenarios)
         return self
 
     @model_validator(mode="after")
     def validate_component_metadata_scope(self) -> Self:
-        """Return the config, raising ValueError if router or KV transfer settings are misplaced."""
         return _validate_component_metadata_scope(self)
 
     @model_validator(mode="after")
     def validate_multinode_entry_scope(self) -> Self:
-        """Return the config, raising ValueError if an entry's workers do not fit its node type."""
         return _validate_multinode_entry_scope(self)
 
     @model_validator(mode="after")
     def validate_srt_recipes(self) -> Self:
-        """Return the config, raising ValueError unless every entry names a valid srt recipe."""
         return _validate_srt_recipes(self)
 
 
 class MultiNodeMasterConfigEntry(BaseModel):
+    """Top-level multinode master configuration entry."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     image: str
@@ -985,33 +1018,28 @@ class MultiNodeMasterConfigEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_agentic_runner(self) -> Self:
-        """Return the config, raising ValueError if agentic scenarios use a non-cluster runner."""
         _validate_agentic_runner_is_cluster(self.runner, self.scenarios)
         return self
 
     @model_validator(mode="after")
     def validate_component_metadata_scope(self) -> Self:
-        """Return the config, raising ValueError if router or KV transfer settings are misplaced."""
         return _validate_component_metadata_scope(self)
 
     @model_validator(mode="after")
     def validate_multinode_entry_scope(self) -> Self:
-        """Return the config, raising ValueError if an entry's workers do not fit its node type."""
         return _validate_multinode_entry_scope(self)
 
     @model_validator(mode="after")
     def validate_srt_recipes(self) -> Self:
-        """Return the config, raising ValueError unless every entry names a valid srt recipe."""
         return _validate_srt_recipes(self)
 
 
 def srt_recipe_path(multinode: bool, directory: str, reference: str) -> str:
-    """Return the repository path of a recipe ``reference`` in its single- or multinode dir."""
+    """A row's recipe reference relative to the project root, selector kept."""
     return f"{MULTI_NODE_RECIPES if multinode else SINGLE_NODE_RECIPES}/{directory}/{reference}"
 
 
 def _zip_length(group: Any) -> int:
-    """Return the variant count of a zip override group, its longest list."""
     if isinstance(group, list):
         return len(group)
     if isinstance(group, dict):
@@ -1020,16 +1048,12 @@ def _zip_length(group: Any) -> int:
 
 
 def _check_srt_recipe(root: Path, reference: str, recipes: dict[str, Any]) -> None:
-    """Raise ValueError unless the recipe file exists, parses, and has the selected variant.
-
-    Parsed recipes are cached in ``recipes`` by path.
-    """
     path, _, selector = reference.partition(":")
     if path not in recipes:
         if not (root / path).is_file():
             raise ValueError(f"{reference} does not exist")
         try:
-            recipes[path] = yamlio.safe_load((root / path).read_text())
+            recipes[path] = yaml.safe_load((root / path).read_text())
         except yaml.YAMLError as error:
             raise ValueError(f"{path} is not valid YAML") from error
     recipe = recipes[path]
@@ -1043,7 +1067,7 @@ def _check_srt_recipe(root: Path, reference: str, recipes: dict[str, Any]) -> No
 
 
 def config_root(config_files: list[str]) -> Path:
-    """Return the project directory shared by the config files, or raise ValueError."""
+    """The project directory whose ``configs/`` holds ``config_files``; recipes resolve under it."""
     roots = {Path(config_file).resolve().parent.parent for config_file in config_files}
     if len(roots) != 1:
         raise ValueError(f"Master configs must share one project directory: {sorted(roots)}")
@@ -1051,10 +1075,7 @@ def config_root(config_files: list[str]) -> Path:
 
 
 def srt_recipe_references(master_configs: dict) -> dict[str, list[str]]:
-    """Return the srt recipe paths each master config key references.
-
-    Raise ValueError when a master config entry fails validation.
-    """
+    """Each validated config's srt-recipe and eval-srt-recipe, relative to its project root."""
     references = {}
     for key, entry in master_configs.items():
         model = (
@@ -1076,7 +1097,7 @@ def srt_recipe_references(master_configs: dict) -> dict[str, list[str]]:
 
 
 def validate_master_config(master_configs: dict, root: Path) -> dict:
-    """Return the master configs, raising ValueError if an entry or its recipes are invalid."""
+    """Validate master configs and the recipe variant each srt-recipe selects under ``root``."""
     recipes: dict[str, Any] = {}
     for key, references in srt_recipe_references(master_configs).items():
         for reference in references:
@@ -1088,7 +1109,6 @@ def validate_master_config(master_configs: dict, root: Path) -> dict:
 
 
 def _validate_runner_labels(labels: dict) -> None:
-    """Raise ValueError unless every runner label maps to a non-empty list of strings."""
     for key, value in labels.items():
         if not isinstance(value, list):
             raise ValueError(
@@ -1103,7 +1123,7 @@ def _validate_runner_labels(labels: dict) -> None:
 
 
 def validate_runner_config(runner_configs: dict) -> dict:
-    """Return the runner config, raising ValueError if its labels or clusters are invalid."""
+    """Validate runner labels plus the ``clusters:`` records they resolve to."""
     labels = runner_configs.get("labels")
     if not isinstance(labels, dict):
         raise ValueError("Runner config must define a labels mapping")
@@ -1115,7 +1135,16 @@ def validate_runner_config(runner_configs: dict) -> dict:
     return runner_configs
 
 
+"""
+    Below is the validation logic for the changelog entries found in perf-changelog.yaml.
+    This ensures that the changelog entries conform to the expected structure before
+    proceeding with processing.
+"""
+
+
 class ChangelogEntry(BaseModel):
+    """Pydantic model for validating changelog entry structure."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     config_keys: list[str] = Field(alias="config-keys", min_length=1)
@@ -1150,7 +1179,7 @@ class ChangelogEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_append_only_mode(self) -> Self:
-        """Return the entry, raising ValueError if no-evals or append-only selects evals."""
+        """Append-only entries are throughput deltas, never eval-only requests."""
         if self.no_evals and (
             self.evals_only or self.all_evals or self.eval_min_prefill_ep is not None
         ):
@@ -1163,6 +1192,8 @@ class ChangelogEntry(BaseModel):
 
 
 class ChangelogMetadata(BaseModel):
+    """Pydantic model for validating changelog metadata structure."""
+
     model_config = ConfigDict(extra="forbid")
 
     base_ref: str
@@ -1171,6 +1202,11 @@ class ChangelogMetadata(BaseModel):
 
 
 class ChangelogMatrixEntry(BaseModel):
+    """Pydantic model for validating final changelog matrix entry structure.
+    This imposes a strict contract on the output of infx.matrix.plan, dictated by
+    the expected input to the run-sweep.yml workflow file.
+    """
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     single_node: dict[str, list[SingleNodeMatrixEntry | SingleNodeAgenticMatrixEntry]] = Field(
@@ -1187,15 +1223,12 @@ class ChangelogMatrixEntry(BaseModel):
 
 
 def load_config_files(config_files: list[str], validate: bool = True) -> dict:
-    """Load and merge the master config files, validating them unless ``validate`` is False.
-
-    Raise ValueError for a missing file, bad or duplicate keys, or an invalid config.
-    """
+    """Merge YAML configs, rejecting missing files, non-mappings and duplicate keys."""
     all_config_data = {}
     for config_file in config_files:
         try:
             with open(config_file) as f:
-                config_data = yamlio.load(f, yamlio.UniqueKeySafeLoader)
+                config_data = yaml.safe_load(f)
                 if not isinstance(config_data, dict):
                     raise ValueError(f"Config file '{config_file}' must contain a dictionary")
 
@@ -1226,13 +1259,10 @@ def load_config_files(config_files: list[str], validate: bool = True) -> dict:
 
 
 def load_runner_file(runner_file: str, validate: bool = True) -> dict:
-    """Load the runner config, validating it unless ``validate`` is False.
-
-    Raise ValueError when the file is missing or invalid.
-    """
+    """Load runner YAML, optionally validating its schema."""
     try:
         with open(runner_file) as f:
-            runner_config = yamlio.safe_load(f)
+            runner_config = yaml.safe_load(f)
     except FileNotFoundError as e:
         raise ValueError(f"Runner config file '{runner_file}' does not exist.") from e
 

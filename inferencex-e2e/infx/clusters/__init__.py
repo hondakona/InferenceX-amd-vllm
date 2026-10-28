@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal, Self
 
+import yaml
 from pydantic import (
     Field,
     PrivateAttr,
@@ -20,7 +21,6 @@ from pydantic import (
     model_validator,
 )
 
-from infx import yamlio
 from infx.clusters.base import Record, SchedulerSettings
 from infx.clusters.slurm import Fabric, SlurmSettings
 from infx.config import RUNNER_CONFIG, repository_root
@@ -83,17 +83,14 @@ class Cluster(Record):
 
     @property
     def id(self) -> str:
-        """Return the cluster id this record was bound to, or an empty string."""
         return self._id
 
     def bind_id(self, cluster_id: str) -> None:
-        """Record ``cluster_id`` as this cluster's id."""
         self._id = cluster_id
 
     @field_validator("env")
     @classmethod
     def _exportable(cls, env: dict[str, str]) -> dict[str, str]:
-        """Return ``env`` unchanged, or raise ValueError if any value contains a comma."""
         if names := sorted(name for name, value in env.items() if "," in value):
             raise ValueError(f"env values cannot contain ',' (srun --export splits on it): {names}")
         return env
@@ -223,7 +220,7 @@ def load_inventory(runner_config: str | Path | Mapping[str, Any] | None = None) 
         data = runner_config
     else:
         with open(runner_config) as file:
-            data = yamlio.safe_load(file)
+            data = yaml.safe_load(file)
         if not isinstance(data, Mapping):
             raise ValueError(f"{runner_config}: runner config must be a mapping")
     return RunnerInventory.model_validate(data)

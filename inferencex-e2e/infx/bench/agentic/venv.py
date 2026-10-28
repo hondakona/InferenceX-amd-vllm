@@ -35,22 +35,18 @@ class Runtime:
 
     @property
     def venv(self) -> Path:
-        """The venv directory under ``root``."""
         return self.root / "venv"
 
     @property
     def python(self) -> Path:
-        """The venv's python interpreter."""
         return self.venv / "bin" / "python"
 
     @property
     def agentx(self) -> Path:
-        """The venv's ``agentx`` executable."""
         return self.venv / "bin" / "agentx"
 
     @property
     def hf(self) -> Path:
-        """The venv's ``hf`` executable."""
         return self.venv / "bin" / "hf"
 
     def active(self) -> bool:
@@ -87,5 +83,4 @@ def bootstrap(runtime: Runtime) -> int:
 
 
 def _executable(path: Path) -> bool:
-    """Whether ``path`` is a file this process may execute."""
     return path.is_file() and os.access(path, os.X_OK)

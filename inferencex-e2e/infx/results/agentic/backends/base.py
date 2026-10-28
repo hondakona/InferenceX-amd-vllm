@@ -28,7 +28,6 @@ class ServerMetricsBackend:
     name = ""
 
     def matches(self, metrics: dict[str, dict[str, Any]], framework: str) -> bool:
-        """Return whether this adapter handles ``metrics`` scraped from ``framework``."""
         raise NotImplementedError
 
     def populate(
@@ -37,7 +36,6 @@ class ServerMetricsBackend:
         flat: dict[str, Any],
         nested: dict[str, Any],
     ) -> None:
-        """Fill the ``flat`` and ``nested`` server metric dicts in place from ``metrics``."""
         raise NotImplementedError
 
     def gpu_kv_capacity_tokens(
@@ -45,12 +43,10 @@ class ServerMetricsBackend:
         metrics: dict[str, dict[str, Any]],  # noqa: ARG002
         server_logs: Iterable[str | None],  # noqa: ARG002
     ) -> int | None:
-        """Return the total GPU KV cache capacity in tokens from ``metrics`` or ``server_logs``, None by default."""
         return None
 
 
 def empty_server_metrics(present: bool, metric_count: int) -> dict[str, Any]:
-    """Return the nested server metrics skeleton with every value None, tagged ``present`` and ``metric_count``."""
     return {
         "present": present,
         "adapter": "none",
@@ -102,7 +98,6 @@ def empty_server_metrics(present: bool, metric_count: int) -> dict[str, Any]:
 
 
 def apply_profile_totals(flat: dict[str, Any], records: list[dict[str, Any]]) -> None:
-    """Fill missing prompt and generation totals in ``flat`` from per-record lengths and set the completed count."""
     input_tokens = _record_token_sum(records, "input_sequence_length")
     output_tokens = _record_token_sum(records, "output_sequence_length")
     if flat["total_prompt_tokens"] is None and input_tokens is not None:
@@ -113,14 +108,12 @@ def apply_profile_totals(flat: dict[str, Any], records: list[dict[str, Any]]) ->
 
 
 def counter_int(value: float | None) -> int | None:
-    """Round a counter ``value`` to an int, keeping None."""
     if value is None:
         return None
     return round(value)
 
 
 def _record_token_sum(records: list[dict[str, Any]], metric_name: str) -> int | None:
-    """Sum the integer ``metric_name`` values across ``records``, or None when no record has one."""
     total = 0
     found = False
     for record in records:

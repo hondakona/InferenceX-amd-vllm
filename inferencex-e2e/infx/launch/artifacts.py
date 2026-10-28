@@ -30,12 +30,10 @@ class ArtifactError(RuntimeError):
 
 
 def _say(message: str) -> None:
-    """Print ``message`` to stdout and flush."""
     print(message, flush=True)
 
 
 def _warn(message: str) -> None:
-    """Print ``message`` to stderr and flush."""
     print(message, file=sys.stderr, flush=True)
 
 
@@ -63,7 +61,6 @@ _POINT_FIELDS = (
 
 
 def _point_fields(filename: str) -> list[str]:
-    """Return the concurrency, GPU, ctx and gen fields of a result filename, blank if absent."""
     return [match.group(1) if (match := p.search(filename)) else "" for p in _POINT_FIELDS]
 
 
@@ -80,18 +77,15 @@ def _result_subdirs(logs_dir: Path) -> list[Path]:
 
 
 def copy_fixed_sequence_results(logs_dir: Path, workspace: Path, result_filename: str) -> None:
-    """Copy srt-slurm's ``results_concurrency_*.json`` points under bounded workspace names.
-
-    Skips benchmark_serving's ``.pytorch.json`` sidecars, which share a point's name prefix.
-    """
+    """Copy srt-slurm's ``results_concurrency_*.json`` points under bounded workspace names."""
     subdirs = _result_subdirs(logs_dir)
     if not subdirs:
-        _warn(f"WARNING: no result subdirectories found in {logs_dir}")
+        _say(f"Warning: No result subdirectories found in {logs_dir}")
     for subdir in subdirs:
         _say(f"Processing result subdirectory: {subdir}")
         config_name = subdir.name
         for result_file in sorted(subdir.rglob("results_concurrency_*.json")):
-            if not result_file.is_file() or result_file.name.endswith(".pytorch.json"):
+            if not result_file.is_file():
                 continue
             concurrency, gpus, ctx, gen = _point_fields(result_file.name)
             _say(
@@ -109,7 +103,6 @@ def copy_fixed_sequence_results(logs_dir: Path, workspace: Path, result_filename
 
 
 def _top_level_files(directory: Path, pattern: str = "*") -> list[Path]:
-    """Return regular, non-symlink files directly in ``directory`` matching ``pattern``, sorted."""
     return sorted(
         entry
         for entry in directory.iterdir()

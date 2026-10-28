@@ -400,7 +400,7 @@ def uv_step(argv: list[str]) -> str:
     """Name one recorded ``uv`` call of the lm-eval install into this interpreter."""
     assert argv[0] == "pip" and argv[-2:] == ["--python", sys.executable]
     assert "--break-system-packages" in argv
-    spec = next(arg for arg in argv[2:] if not arg.startswith("-"))
+    spec = argv[-3]
     if argv[1] == "uninstall":
         return f"uninstall {spec}"
     if {"--no-deps", "--reinstall"} <= set(argv):

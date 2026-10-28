@@ -13,7 +13,6 @@ class DynamoVllmBackend(VllmBackend):
     name = "dynamo-vllm"
 
     def matches(self, metrics: dict[str, dict[str, Any]], framework: str) -> bool:
-        """Return True for dynamo frameworks or dynamo_ metrics, except dynamo-sglang with sglang metrics."""
         metric_names = set(metrics)
         framework = framework.lower()
         if framework == "dynamo-sglang" and any(
@@ -28,7 +27,6 @@ class DynamoVllmBackend(VllmBackend):
         self,
         metrics: dict[str, dict[str, Any]],
     ) -> tuple[float | None, float | None]:
-        """Return prompt and generation token totals, preferring Dynamo frontend counters over vLLM ones."""
         prompt_total = first_counter_total(
             metrics,
             ["dynamo_frontend_input_sequence_tokens", "vllm:prompt_tokens"],
@@ -45,7 +43,6 @@ class DynamoVllmBackend(VllmBackend):
         flat: dict[str, Any],
         nested: dict[str, Any],
     ) -> None:
-        """Fill the vLLM fields, then the Dynamo frontend and router fields, from ``metrics``."""
         super().populate(metrics, flat, nested)
         self._populate_dynamo(metrics, flat, nested)
 
@@ -55,7 +52,6 @@ class DynamoVllmBackend(VllmBackend):
         flat: dict[str, Any],
         nested: dict[str, Any],
     ) -> None:
-        """Add Dynamo GPU usage, frontend and router hit rates where vLLM metrics left gaps."""
         dynamo_gpu_usage = normalize_fraction(
             gauge_stat(
                 metrics,
@@ -96,9 +92,7 @@ class DynamoVllmBackend(VllmBackend):
             )
         )
         if flat["server_overall_cache_hit_rate"] is None:
-            overall = frontend_hit_rate if frontend_hit_rate is not None else router_shared_hit_rate
-            flat["server_overall_cache_hit_rate"] = overall
-            nested["cache"]["overall_cache_hit_rate"] = overall
+            flat["server_overall_cache_hit_rate"] = frontend_hit_rate or router_shared_hit_rate
 
         nested["cache"].update(
             {

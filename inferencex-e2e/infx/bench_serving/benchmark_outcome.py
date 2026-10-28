@@ -16,10 +16,7 @@ class BenchmarkOutcome(TypedDict):
 
 
 def benchmark_outcome(requested: int, completed: int) -> BenchmarkOutcome:
-    """Apply the five-percent failure gate to ``requested`` and ``completed`` and return the outcome.
-
-    Raises ``ValueError`` unless both are ints with ``0 <= completed <= requested`` and ``requested > 0``.
-    """
+    """Record the same five-percent gate before cleanup or artifact upload."""
     if (
         type(requested) is not int
         or type(completed) is not int
