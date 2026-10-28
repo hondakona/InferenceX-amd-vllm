@@ -36,7 +36,7 @@ base:
         trust-remote-code: true
         moe-backend: auto
         tensor-parallel-size: 8
-        gpu-memory-utilization: 0.85
+        gpu-memory-utilization: 0.84
         language-model-only: true
         enable-auto-tool-choice: true
         tool-call-parser: kimi_k3
