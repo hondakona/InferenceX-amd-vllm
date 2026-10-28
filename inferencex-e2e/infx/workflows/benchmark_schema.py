@@ -58,11 +58,6 @@ def _validate_rows(
     multinode: bool | None = None,
     agentic: bool | None = None,
 ) -> None:
-    """Validate each row in rows against its workflow schema.
-
-    multinode and agentic force the schema choice when set, otherwise each row decides. Raises
-    ValueError located by path.
-    """
     if not isinstance(rows, list):
         raise ValueError(f"{path}: expected a list of matrix rows")
     for index, row in enumerate(rows):
@@ -111,10 +106,6 @@ def validate_matrix(matrix: object, *, plan: bool = False) -> None:
 
 
 def main() -> None:
-    """Validate the matrix JSON on stdin and echo it unchanged to stdout.
-
-    Exits with a usage error if the matrix is invalid.
-    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--plan",
