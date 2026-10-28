@@ -802,7 +802,8 @@ clusters:
       cpus-per-task: 128
       srun-args: [--container-remap-root, --container-writable]
       volumes:
-        hf-hub-cache: {path: /var/lib/hf-hub-cache, visibility: node-local}
+        #hf-hub-cache: {path: /var/lib/hf-hub-cache, visibility: node-local}
+        hf-hub-cache: {path: /root/.cache/huggingface/hub, visibility: node-local}
         shared-hf-hub-cache: {path: /it-share/hf-hub-cache}
         aiperf-cache: {path: /it-share/aiperf-cache}
         it-share-data: {path: /it-share/data}

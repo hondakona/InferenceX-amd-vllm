@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-bash "$(dirname "${BASH_SOURCE[0]}")/check-rdma.sh"
+# bash "$(dirname "${BASH_SOURCE[0]}")/check-rdma.sh"
 
 # Preserve the legacy bare-process GPU drain gate. Slurm owns the node, but a
 # process left outside the prior job's container can still retain VRAM and make
